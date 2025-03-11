@@ -85,6 +85,7 @@ def salvar_dados_mysql(dados):
         # Inserir dados principais
         start_commit_time = time.time()
         print("***-*-*-*-*-*-*-*-*-******-*-*-*-*-*-*-*-*-***")
+
         progress_bar = tqdm(total=len(dados), desc="Salvando chamados", unit="chamado")
         
         for issue in dados:
@@ -471,6 +472,9 @@ def popular_atualizar_cursos_coordenadores():
     """
     cursor = sql_client.cursor()
     
+    start_commit_time = time.time()
+    print("***-*-*-*-*-*-*-*-*-******-*-*-*-*-*-*-*-*-***\n Populando e atualizando estrutura da tabela...")
+
     try:        
         # Popula a tabela de cursos
         cursor.execute(f"""
@@ -557,7 +561,10 @@ def popular_atualizar_cursos_coordenadores():
         cursor.execute("SET SQL_SAFE_UPDATES = 1")  
         
         sql_client.commit()
-        print("Estrutura da tabela atualizada com sucesso!")
+
+        end_commit_time = time.time()
+        print("***-*-*-*-*-*-*-*-*-******-*-*-*-*-*-*-*-*-***\n")
+        print(f"Estrutura da tabela atualizada com sucesso!\nTempo gasto para atualizar: {end_commit_time - start_commit_time:.2f} segundos\n***-*-*-*-*-*-*-*-*-******-*-*-*-*-*-*-*-*-***")
         
     except Exception as e:
         sql_client.rollback()
