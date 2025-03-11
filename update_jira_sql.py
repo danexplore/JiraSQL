@@ -8,16 +8,8 @@ from dotenv import load_dotenv
 from tqdm import tqdm
 from datetime import datetime
 from urllib.parse import quote
-import tkinter as tk
-from tkinter import messagebox
 import unicodedata
-import re
-
-def exibir_popup(mensagem):
-    root = tk.Tk()
-    root.withdraw()  # Oculta a janela principal
-    messagebox.showinfo("Informação", mensagem)
-    root.destroy()  # Fecha o contexto do tkinter
+import re   
 
 # Carregar variáveis de ambiente do arquivo .env
 load_dotenv()
@@ -38,149 +30,31 @@ headers = {
 }
 
 # Configurações do Banco de Dados MySQL
-DB_HOST = os.getenv("DB_HOST", "localhost")
-DB_USER = os.getenv("DB_USER", "root")
+DB_HOST = os.getenv("DB_HOST")
+DB_USER = os.getenv("DB_USER")
 DB_PASSWORD = os.getenv("DB_PASSWORD")
-DB_NAME = os.getenv("DB_NAME", "jira_sql")
+DB_NAME = os.getenv("DB_NAME")
+DB_PORT = int(os.getenv("DB_PORT"))
 
 ano_atual = datetime.now().year
 mes_atual = datetime.now().month
 
-# Atualizar o CREATE_TABLE_SQL para incluir a nova estrutura
-CREATE_TABLE_SQL = """
-CREATE TABLE IF NOT EXISTS coordenadores (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    coordenador VARCHAR(255) UNIQUE NOT NULL,
-    coordenador_master VARCHAR(255)
-);
-
-CREATE TABLE IF NOT EXISTS cursos (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    nome_curso VARCHAR(255) NOT NULL,
-    entidade VARCHAR(50) NOT NULL,
-    coordenador_id INT,
-    FOREIGN KEY (coordenador_id) REFERENCES coordenadores(id)
-);
-
-CREATE TABLE IF NOT EXISTS db_dpc_jira (
-    chave VARCHAR(50) PRIMARY KEY,
-    link_jira VARCHAR(255),
-    rotulos TEXT,
-    data_para_ficar_pronto DATE,
-    data_criacao DATE,
-    data_de_lancamento DATE,
-    date_launch_jira VARCHAR(50),
-    ano VARCHAR(4),
-    mes VARCHAR(2),
-    status_launch VARCHAR(20),
-    resumo TEXT,
-    descricao TEXT,
-    versoes_corrigidas TEXT,
-    tipo_de_item VARCHAR(50),
-    situacao VARCHAR(50),
-    cpf_conteudista VARCHAR(50),
-    conteudista TEXT,
-    coordenador TEXT,
-    coordenador_master TEXT,
-    entidade_curso TEXT,
-    entidade VARCHAR(50),
-    migracao VARCHAR(10),
-    curso TEXT,
-    curso_id INT,
-    coordenador_id INT,
-    status_contrato VARCHAR(50),
-    status_conteudos TEXT,
-    status_videos TEXT,
-    FOREIGN KEY (curso_id) REFERENCES cursos(id),
-    FOREIGN KEY (coordenador_id) REFERENCES coordenadores(id)
-);
-
-CREATE OR REPLACE VIEW vw_analise_producao AS
-WITH status_count AS (
-    SELECT 
-        c.id AS curso_id,
-        c.nome_curso AS curso,
-        c.entidade AS entidade,
-        c.coordenador_id AS coordenador_id,
-        MIN(d.data_criacao) AS primeira_data_criacao,
-        COUNT(*) AS total_disciplinas,
-        SUM(CASE 
-            WHEN d.tipo_de_item = 'SR-Completa' AND d.status_conteudos = 'Fechado' THEN 1 
-            ELSE 0 
-        END) AS Conteudo_Fechado,
-        SUM(CASE 
-            WHEN d.tipo_de_item = 'SR-Reuso' THEN 1 
-            ELSE 0 
-        END) AS disciplinas_reuso,
-        SUM(CASE 
-            WHEN d.tipo_de_item = 'SR-Completa' AND d.status_videos = 'Fechado' THEN 1
-            ELSE 0 
-        END) AS Video_Fechado,
-        SUM(CASE 
-            WHEN d.tipo_de_item = 'SR-Reuso' AND d.status_videos = 'Fechado' THEN 1 
-            ELSE 0 
-        END) AS Video_Reuso
-    FROM db_dpc_jira d
-    JOIN cursos c ON d.curso_id = c.id
-    WHERE c.nome_curso IS NOT NULL AND c.entidade != "Pós-Graduação" AND c.coordenador_id IS NOT NULL
-    GROUP BY c.id, c.nome_curso, c.entidade, c.coordenador_id
+print('connecting to database')
+sql_client = pymysql.connect(
+    host=DB_HOST,
+    user=DB_USER,
+    password=DB_PASSWORD,
+    database=DB_NAME,
+    port=DB_PORT
 )
-SELECT 
-    curso_id,
-    coordenador_id,
-    curso,
-    entidade,
-    primeira_data_criacao,
-    total_disciplinas,
-    Conteudo_Fechado,
-    Video_Fechado,
-    disciplinas_reuso,
-    ROUND(
-        CASE 
-            WHEN total_disciplinas > 0 THEN (Conteudo_Fechado * 100.0 / (total_disciplinas-disciplinas_reuso)) 
-            ELSE 0 
-        END, 2
-    ) AS prod_conteudo,
-    ROUND(
-        CASE 
-            WHEN total_disciplinas > 0 THEN (Video_Fechado * 100.0 / (total_disciplinas-disciplinas_reuso)) 
-            ELSE 0 
-        END, 2
-    ) AS prod_video,
-    ROUND(
-        CASE 
-            WHEN total_disciplinas > 0 THEN 
-                (((Conteudo_Fechado + disciplinas_reuso) * 100.0 / total_disciplinas) + 
-                 ((Video_Fechado + disciplinas_reuso) * 100.0 / total_disciplinas)) / 2
-            ELSE 0 
-        END, 2
-    ) AS prod_curso,
-    CASE 
-        WHEN total_disciplinas = 0 THEN 'Não Iniciado'
-        WHEN (total_disciplinas - disciplinas_reuso) = Conteudo_Fechado 
-             AND (total_disciplinas - disciplinas_reuso) = Video_Fechado THEN 'Completo'
-        WHEN Conteudo_Fechado > 0 OR Video_Fechado > 0 THEN 'Em Andamento'
-        ELSE 'Não Iniciado'
-    END AS status_producao
-FROM status_count
-where total_disciplinas > 5
-ORDER BY curso;
-"""
+print('connected to database')
 
-# Função para conectar ao banco de dados
-def conectar_banco():
-    return pymysql.connect(
-        host=DB_HOST, user=DB_USER, password=DB_PASSWORD, database=DB_NAME
-    )
-
-def obter_data_criacao_mais_recente():
-    conn = conectar_banco()
-    cursor = conn.cursor()
-    cursor.execute("SELECT MAX(data_criacao) FROM db_dpc_jira")
-    data_mais_recente = cursor.fetchone()[0]
-    cursor.close()
-    conn.close()
-    return data_mais_recente
+update_time = datetime.now().strftime("%Y-%m-%d")
+last_updated = open("last_updated.txt", "r").read().strip()
+print(last_updated)
+if last_updated == update_time:
+    print("Já foi atualizado hoje.")
+    exit()
 
 def obter_primeiro_coordenador(coordenador):
     if not coordenador:
@@ -203,103 +77,86 @@ def obter_primeiro_coordenador(coordenador):
     
     return primeiro_coordenador
 
-def obter_coordenador_id(cursor, coordenador):
-    """
-    Obtém o ID do coordenador a partir do nome.
-    """
-    primeiro_coordenador = obter_primeiro_coordenador(coordenador)
-    if not primeiro_coordenador:
-        return None
-    
-    cursor.execute("""
-        SELECT id FROM coordenadores
-        WHERE coordenador = %s
-    """, (primeiro_coordenador))
-    
-    result = cursor.fetchone()
-    return result[0] if result else None
-
 # Função para salvar dados no banco com transação
 def salvar_dados_mysql(dados):
-    conn = conectar_banco()
-    cursor = conn.cursor()
-    
-    # Criar/atualizar as tabelas
-    for comando in CREATE_TABLE_SQL.split(';'):
-        if comando.strip():
-            cursor.execute(comando)
+    cursor = sql_client.cursor()
     
     try:
         # Inserir dados principais
-        for issue in dados:           
+        start_commit_time = time.time()
+        print("***-*-*-*-*-*-*-*-*-******-*-*-*-*-*-*-*-*-***")
+        progress_bar = tqdm(total=len(dados), desc="Salvando chamados", unit="chamado")
+        
+        for issue in dados:
             # Inserir na tabela principal
             cursor.execute(
-                """
-                INSERT INTO db_dpc_jira (
-                    chave, link_jira, rotulos, data_para_ficar_pronto, data_criacao, 
-                    data_de_lancamento, date_launch_jira, ano, mes, status_launch, 
-                    resumo, versoes_corrigidas, tipo_de_item, situacao, cpf_conteudista,
-                    conteudista, coordenador, coordenador_master, entidade_curso, entidade,
-                    migracao, curso, status_contrato, status_conteudos, 
-                    status_videos, descricao
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 
-                         %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON DUPLICATE KEY UPDATE
-                    rotulos = VALUES(rotulos),
-                    link_jira = VALUES(link_jira),
-                    data_para_ficar_pronto = VALUES(data_para_ficar_pronto),
-                    
-                    data_criacao = VALUES(data_criacao),
-                    data_de_lancamento = VALUES(data_de_lancamento),
-                    date_launch_jira = VALUES(date_launch_jira),
-                    ano = VALUES(ano),
-                    mes = VALUES(mes),
-                    status_launch = VALUES(status_launch),
-                    resumo = VALUES(resumo),
-                    versoes_corrigidas = VALUES(versoes_corrigidas),
-                    tipo_de_item = VALUES(tipo_de_item),
-                    situacao = VALUES(situacao),
-                    cpf_conteudista = VALUES(cpf_conteudista),
-                    conteudista = VALUES(conteudista),
-                    coordenador = VALUES(coordenador),
-                    coordenador_master = VALUES(coordenador_master),
-                    entidade_curso = VALUES(entidade_curso),
-                    entidade = VALUES(entidade),
-                    migracao = VALUES(migracao),
-                    curso = VALUES(curso),
-                    status_contrato = VALUES(status_contrato),
-                    status_conteudos = VALUES(status_conteudos),
-                    status_videos = VALUES(status_videos),
-                    descricao = VALUES(descricao)
-                """,
-                (
-                    issue['chave'], issue['link_jira'], issue['rotulos'], 
-                    issue['data_para_ficar_pronto'], issue['data_criacao'], 
-                    issue['data_de_lancamento'], issue['date_launch_jira'], 
-                    issue['ano'], issue['mes'], issue['status_launch'], 
-                    issue['resumo'], issue['versoes_corrigidas'], 
-                    issue['tipo_de_item'], issue['situacao'], 
-                    issue['cpf_conteudista'], issue['conteudista'], 
-                    issue['coordenador'], issue['coordenador_master'], 
-                    issue['entidade_curso'], issue['entidade'],
-                    issue['migracao'], issue['curso'], 
-                    issue['status_contrato'], issue['status_conteudos'], 
-                    issue['status_videos'], issue['descricao']
-                )
+            """
+            INSERT INTO db_dpc_jira (
+                chave, link_jira, rotulos, data_para_ficar_pronto, data_criacao, data_atualizacao, 
+                data_de_lancamento, date_launch_jira, ano, mes, status_launch, 
+                resumo, versoes_corrigidas, tipo_de_item, situacao, cpf_conteudista,
+                conteudista, coordenador, coordenador_master, entidade_curso, entidade,
+                migracao, curso, status_contrato, status_conteudos, 
+                status_videos, descricao
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 
+                 %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                rotulos = VALUES(rotulos),
+                link_jira = VALUES(link_jira),
+                data_para_ficar_pronto = VALUES(data_para_ficar_pronto),
+                data_criacao = VALUES(data_criacao),
+                data_atualizacao = VALUES(data_atualizacao),
+                data_de_lancamento = VALUES(data_de_lancamento),
+                date_launch_jira = VALUES(date_launch_jira),
+                ano = VALUES(ano),
+                mes = VALUES(mes),
+                status_launch = VALUES(status_launch),
+                resumo = VALUES(resumo),
+                versoes_corrigidas = VALUES(versoes_corrigidas),
+                tipo_de_item = VALUES(tipo_de_item),
+                situacao = VALUES(situacao),
+                cpf_conteudista = VALUES(cpf_conteudista),
+                conteudista = VALUES(conteudista),
+                coordenador = VALUES(coordenador),
+                coordenador_master = VALUES(coordenador_master),
+                entidade_curso = VALUES(entidade_curso),
+                entidade = VALUES(entidade),
+                migracao = VALUES(migracao),
+                curso = VALUES(curso),
+                status_contrato = VALUES(status_contrato),
+                status_conteudos = VALUES(status_conteudos),
+                status_videos = VALUES(status_videos),
+                descricao = VALUES(descricao)
+            """,
+            (
+                issue['chave'], issue['link_jira'], issue['rotulos'], 
+                issue['data_para_ficar_pronto'], issue['data_criacao'], issue['data_atualizacao'], 
+                issue['data_de_lancamento'], issue['date_launch_jira'], 
+                issue['ano'], issue['mes'], issue['status_launch'], 
+                issue['resumo'], issue['versoes_corrigidas'], 
+                issue['tipo_de_item'], issue['situacao'], 
+                issue['cpf_conteudista'], issue['conteudista'], 
+                issue['coordenador'], issue['coordenador_master'], 
+                issue['entidade_curso'], issue['entidade'],
+                issue['migracao'], issue['curso'], 
+                issue['status_contrato'], issue['status_conteudos'], 
+                issue['status_videos'], issue['descricao']
             )
+            )
+            progress_bar.update(1)
         
-        conn.commit()
-        mensagem = f"{len(dados)} tarefas salvas com sucesso!"
-        print(mensagem)
-        exibir_popup(mensagem)
+        sql_client.commit()
+        progress_bar.close()
+        end_commit_time = time.time()
+        print("***-*-*-*-*-*-*-*-*-******-*-*-*-*-*-*-*-*-***\n")
+        print(f"Chamados salvos com sucesso!\nTempo gasto para salvar os chamados: {end_commit_time - start_commit_time:.2f} segundos\n***-*-*-*-*-*-*-*-*-******-*-*-*-*-*-*-*-*-***")
         
     except Exception as e:
-        conn.rollback()
+        sql_client.rollback()
         print(f"Erro ao salvar dados: {str(e)}")
         raise e
     finally:
         cursor.close()
-        conn.close()
 
 # Função para realizar uma requisição com retentativas
 def realizar_requisicao(url, headers, params, max_retentativas=3):
@@ -311,6 +168,7 @@ def realizar_requisicao(url, headers, params, max_retentativas=3):
         time.sleep(2)
     raise Exception(f"Falha ao conectar à API após {max_retentativas} tentativas.")
 
+# Função para pegar os status das subtasks (Video e Conteúdo)
 def processar_status_subtarefas(tipo_de_item, subtasks):
     """
     Processa as subtarefas para extrair os status específicos e identifica o tipo de curso.
@@ -382,8 +240,35 @@ def processar_status_subtarefas(tipo_de_item, subtasks):
     
     return final_status_contrato, final_status_conteudos, final_status_videos, tem_video
 
+# Função para extrair a entidade do curso
+def extrair_entidade(entidade_curso):
+    """
+    Extrai a entidade do campo entidade_curso.
+    """
+    if not entidade_curso:
+        return None
+        
+    # Divide a string no primeiro ' - ' se existir
+    partes = entidade_curso.split(' - ', 1)
+    primeira_parte = partes[0]
+    
+    # Extrai a parte após qualquer "Fac. Unyleya | "
+    if "Fac. Unyleya | " in primeira_parte:
+        # Pega tudo após "Fac. Unyleya | "
+        texto_apos_prefixo = primeira_parte.split("Fac. Unyleya | ")[1]
+        
+        # Se tem mais divisões com |, pega a última parte
+        if " | " in texto_apos_prefixo:
+            entidade = texto_apos_prefixo.split(" | ")[-1]
+        else:
+            entidade = texto_apos_prefixo
+            
+        return entidade
+    
+    return None
+
 # Função para obter dados da API Jira
-def obter_dados_jira(data_criacao_inicio=None):
+def obter_dados_jira():
     # Lista de prefixos válidos para Entidade e Curso
     entidades_validas = [
         "Fac. Unyleya | CETEC",
@@ -416,21 +301,14 @@ def obter_dados_jira(data_criacao_inicio=None):
         'project = PROCONTEUD AND "Entidade e Curso" != "Fac. Unyleya | Graduação"'
         ' AND issuetype in (SR-Completa, SR-Reuso)'
         ' AND status in (Reopen, Closed, Done, "In Progress", "To Do", Pending)'
-        ' AND due >= 2020-01-01'
+        f' AND updated >= {last_updated} ORDER BY duedate DESC'
     )
 
-    if data_criacao_inicio:
-        jql_query = f'{jql_query} AND created >= "{data_criacao_inicio.strftime('%Y-%m-%d')}"'  # Filtro para data de criação
-        #jql_query = f'{jql_query} AND created >= "2020-1-1"'
-
-    jql_query += ' ORDER BY duedate DESC'
     jql_encoded = quote(jql_query, safe=":=,()")
-    print(jql_encoded)
     base_url = f"https://jira.unyleya.com.br/rest/api/2/search?jql={jql_encoded}"
 
     params = {
         "fields": ",".join([
-
             "total",
             "customfield_10808",
             "labels",
@@ -438,6 +316,7 @@ def obter_dados_jira(data_criacao_inicio=None):
             "customfield_10803",
             "customfield_10804",
             "created",
+            "updated",
             "fixVersions",
             "duedate",
             "summary",
@@ -448,9 +327,10 @@ def obter_dados_jira(data_criacao_inicio=None):
             "subtasks",
         ]),
         "startAt": start_at,
-        "maxResults": max_results,
+        "maxResults": max_results
     }
     response = realizar_requisicao(base_url, headers, params)
+
     data = response.json()
     total_issues = data["total"]  # Total issues from Jira API
     progress_bar = tqdm(total=total_issues, desc="Processando tarefas", unit="tarefa")
@@ -473,7 +353,6 @@ def obter_dados_jira(data_criacao_inicio=None):
                 child_value = entidade_curso_data.get("child", {}).get("value", "")
                 entidade_curso = f"{main_value} - {child_value}" if child_value else main_value
                 entidade = extrair_entidade(entidade_curso)
-                print(f"Resultado final da entidade: {entidade}")
             else:   
                 entidade_curso = None
                 entidade = None
@@ -528,6 +407,9 @@ def obter_dados_jira(data_criacao_inicio=None):
             # Data de Criação
             created_datetime = fields.get("created", "")
             created_date = created_datetime.split("T")[0] if created_datetime else None
+            updated_datetime = fields.get("updated", "")
+            updated_date = updated_datetime.split("T")[0] if updated_datetime else None
+
             release_dates = [v["releaseDate"] for v in fields.get("fixVersions", []) if "releaseDate" in v]
             if len(release_dates) > 1:
                 release_date = min(release_dates)
@@ -550,6 +432,7 @@ def obter_dados_jira(data_criacao_inicio=None):
                 "rotulos": ", ".join(rotulos) or None,
                 "data_para_ficar_pronto": fields.get("duedate") or None,
                 "data_criacao": created_date,
+                "data_atualizacao": updated_date,
                 "data_de_lancamento": release_date,
                 "date_launch_jira": date_launch_result,
                 "ano": ano,
@@ -582,57 +465,34 @@ def obter_dados_jira(data_criacao_inicio=None):
 
     return all_issues
 
-def atualizar_estrutura_tabela():
+def popular_atualizar_cursos_coordenadores():
     """
     Atualiza a estrutura da tabela existente e popula as tabelas de cursos e coordenadores
     """
-    conn = conectar_banco()
-    cursor = conn.cursor()
+    cursor = sql_client.cursor()
     
-    try:
-        # Criar/atualizar as tabelas
-        for comando in CREATE_TABLE_SQL.split(';'):
-            if comando.strip():
-                cursor.execute(comando)
-        
-        # Adiciona a coluna 'entidade' e 'coordenador_id' se não existirem
-        cursor.execute(f"""
-            SELECT COUNT(*)
-            FROM INFORMATION_SCHEMA.COLUMNS
-            WHERE TABLE_SCHEMA = '{DB_NAME}'
-              AND TABLE_NAME = 'db_dpc_jira'
-              AND COLUMN_NAME IN ('entidade', 'coordenador_id')
-        """)
-        
-        if cursor.fetchone()[0] == 0:
-            cursor.execute("""
-                ALTER TABLE db_dpc_jira
-                ADD COLUMN entidade VARCHAR(50) NOT NULL,
-                ADD COLUMN coordenador_id INT,
-                ADD FOREIGN KEY (coordenador_id) REFERENCES coordenadores(id)
-            """)
-        
+    try:        
         # Popula a tabela de cursos
-        cursor.execute("""
+        cursor.execute(f"""
             INSERT IGNORE INTO cursos (nome_curso, entidade)
             SELECT DISTINCT
                 curso,
                 entidade
             FROM db_dpc_jira 
-            WHERE curso IS NOT NULL AND entidade IS NOT NULL
+            WHERE curso IS NOT NULL AND entidade IS NOT NULL AND data_atualizacao >= '{last_updated}'
         """)
         
         # Atualiza os IDs dos cursos na tabela principal
         cursor.execute("SET SQL_SAFE_UPDATES = 0")  
-        cursor.execute("""
+        cursor.execute(f"""
             UPDATE db_dpc_jira d
             JOIN cursos c ON d.curso = c.nome_curso AND d.entidade = c.entidade
             SET d.curso_id = c.id
-            WHERE d.chave IS NOT NULL
+            WHERE d.chave IS NOT NULL AND d.data_atualizacao >= '{last_updated}'
         """)
 
         # Popula a tabela de coordenadores com os dados existentes, utilizando primeiro_coordenador
-        cursor.execute("""
+        cursor.execute(f"""
             INSERT INTO coordenadores (coordenador, coordenador_master)
             SELECT 
                 TRIM(SUBSTRING_INDEX(
@@ -662,14 +522,14 @@ def atualizar_estrutura_tabela():
                     END AS coordenador,
                     coordenador_master
                 FROM db_dpc_jira 
-                WHERE coordenador IS NOT NULL
+                WHERE coordenador IS NOT NULL AND data_atualizacao >= '{last_updated}'
             ) d
             ORDER BY primeiro_coordenador
             ON DUPLICATE KEY UPDATE coordenador_master = VALUES(coordenador_master);
         """)
 
         # Atualiza os IDs dos coordenadores na tabela principal utilizando "primeiro_coordenador"
-        cursor.execute("""
+        cursor.execute(f"""
             UPDATE db_dpc_jira d
             JOIN (
                 SELECT id, coordenador 
@@ -683,93 +543,42 @@ def atualizar_estrutura_tabela():
             '’', ''''), 
             '/', 1)) = c.coordenador
             SET d.coordenador_id = c.id
-            WHERE d.chave IS NOT NULL
+            WHERE d.chave IS NOT NULL AND d.data_atualizacao >= '{last_updated}'
         """)
-
-        # Adiciona a nova coluna 'coordenador_id' se não existir na tabela cursos
-        cursor.execute(f"""
-            SELECT COUNT(*)
-            FROM INFORMATION_SCHEMA.COLUMNS
-            WHERE TABLE_SCHEMA = '{DB_NAME}'
-              AND TABLE_NAME = 'cursos'
-              AND COLUMN_NAME = 'coordenador_id'
-        """)
-        
-        if cursor.fetchone()[0] == 0:
-            cursor.execute("""
-                ALTER TABLE cursos
-                ADD COLUMN coordenador_id INT,
-                ADD FOREIGN KEY (coordenador_id) REFERENCES coordenadores(id)
-            """)
         
         # Atualiza os IDs de coordenadores na tabela cursos
         cursor.execute("SET SQL_SAFE_UPDATES = 0")  
-        cursor.execute("""
+        cursor.execute(f"""
             UPDATE cursos c
             JOIN db_dpc_jira d ON c.nome_curso = d.curso AND c.entidade = d.entidade
             SET c.coordenador_id = d.coordenador_id
-            WHERE d.coordenador_id IS NOT NULL
+            WHERE d.coordenador_id IS NOT NULL AND d.data_atualizacao >= '{last_updated}'
         """)
         cursor.execute("SET SQL_SAFE_UPDATES = 1")  
         
-        conn.commit()
+        sql_client.commit()
         print("Estrutura da tabela atualizada com sucesso!")
         
     except Exception as e:
-        conn.rollback()
+        sql_client.rollback()
         print(f"Erro ao atualizar estrutura da tabela: {str(e)}")
         raise e
     finally:
         cursor.close()
-        conn.close()
 
 # Modificar a função main para incluir a atualização da estrutura
-def main():
-    # Atualiza a estrutura da tabela primeiro
-    
-    data_criacao_mais_recente = obter_data_criacao_mais_recente()
-
-    if data_criacao_mais_recente:
-        # Verifica se a data é um objeto datetime ou já está no formato de string
-        if isinstance(data_criacao_mais_recente, datetime):
-            data_criacao_inicio = data_criacao_mais_recente
-        else:
-            # Caso seja uma data (datetime.date), converte para string
-            data_criacao_inicio = datetime.strptime(str(data_criacao_mais_recente), "%Y-%m-%d")
-    else:
-        data_criacao_inicio = None
-
-    dados_jira = obter_dados_jira(data_criacao_inicio)
+def main():    
+    dados_jira = obter_dados_jira()
 
     if dados_jira:
         salvar_dados_mysql(dados_jira)
-    atualizar_estrutura_tabela()
-
-def extrair_entidade(entidade_curso):
-    """
-    Extrai a entidade do campo entidade_curso.
-    """
-    if not entidade_curso:
-        return None
-        
-    # Divide a string no primeiro ' - ' se existir
-    partes = entidade_curso.split(' - ', 1)
-    primeira_parte = partes[0]
+    else:
+        print("Nenhum dado a ser salvo.")
     
-    # Extrai a parte após qualquer "Fac. Unyleya | "
-    if "Fac. Unyleya | " in primeira_parte:
-        # Pega tudo após "Fac. Unyleya | "
-        texto_apos_prefixo = primeira_parte.split("Fac. Unyleya | ")[1]
-        
-        # Se tem mais divisões com |, pega a última parte
-        if " | " in texto_apos_prefixo:
-            entidade = texto_apos_prefixo.split(" | ")[-1]
-        else:
-            entidade = texto_apos_prefixo
-            
-        return entidade
-    
-    return None
+    popular_atualizar_cursos_coordenadores()
 
 if __name__ == "__main__":
     main()
+    sql_client.close()
+    with open("last_updated.txt", "w") as f:
+        f.write(update_time)
