@@ -25,20 +25,52 @@ headers = {
 }
 
 # Configurações do Banco de Dados MySQL
-DB_HOST = os.getenv("DB_HOST")
-DB_USER = os.getenv("DB_USER")
-DB_PASSWORD = os.getenv("DB_PASSWORD")
-DB_NAME = os.getenv("DB_NAME")
-DB_PORT = int(os.getenv("DB_PORT"))
+use_client = True
+
+if use_client:
+    DB_HOST = os.getenv("11DB_HOST")
+    DB_USER = os.getenv("11DB_USER")
+    DB_PASSWORD = os.getenv("11DB_PASSWORD")
+    DB_NAME = os.getenv("11DB_NAME")
+    DB_PORT = int(os.getenv("11DB_PORT"))
+else:
+    DB_HOST = os.getenv("DB_HOST")
+    DB_USER = os.getenv("DB_USER")
+    DB_PASSWORD = os.getenv("DB_PASSWORD")
+    DB_NAME = os.getenv("DB_NAME")
+    DB_PORT = int(os.getenv("DB_PORT"))
 
 ano_atual = datetime.now().year
 mes_atual = datetime.now().month
 
 last_updated = open('last_updated.txt', 'r').read().strip()
-update_time = time.time.now().format('%Y-%m-%d')
+update_time = datetime.now().strftime('%Y-%m-%d')
 
 # Atualizar o CREATE_TABLE_SQL para incluir a nova estrutura
 CREATE_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS db_dpc_jira_disciplinas (
+    chave VARCHAR(50) PRIMARY KEY,
+    link_jira VARCHAR(255),
+    rotulos TEXT,
+    data_para_ficar_pronto DATE,
+    data_criacao DATE,
+    data_atualizacao DATE,
+    data_de_resolucao DATE,
+    disciplina TEXT,
+    coordenador_id INT,
+    coordenador TEXT,
+    coordenador_master TEXT,
+    entidade_curso TEXT,
+    entidade VARCHAR(50),
+    migracao VARCHAR(10),
+    curso TEXT,
+    curso_id INT,
+    situacao VARCHAR(50),
+    descricao TEXT,
+    FOREIGN KEY (curso_id) REFERENCES cursos(id),
+    FOREIGN KEY (coordenador_id) REFERENCES coordenadores(id)
+);
+
 CREATE TABLE IF NOT EXISTS coordenadores (
     id INT AUTO_INCREMENT PRIMARY KEY,
     coordenador VARCHAR(255) UNIQUE NOT NULL,
@@ -114,7 +146,7 @@ WITH status_count AS (
         END) AS Video_Reuso
     FROM db_dpc_jira d
     JOIN cursos c ON d.curso_id = c.id
-    WHERE c.nome_curso IS NOT NULL AND c.entidade != "Pós-Graduação" AND c.coordenador_id IS NOT NULL
+    WHERE c.nome_curso IS NOT NULL AND c.entidade != "Pós-Graduação"
     GROUP BY c.id, c.nome_curso, c.entidade, c.coordenador_id
 )
 SELECT 
@@ -283,4 +315,3 @@ def main():
 if __name__ == "__main__":
     main()
     sql_client.close()
-    open('last_updated.txt', 'w').write(update_time)

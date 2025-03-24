@@ -9,7 +9,8 @@ from tqdm import tqdm
 from datetime import datetime
 from urllib.parse import quote
 import unicodedata
-import re   
+import re
+import json
 
 # Carregar variáveis de ambiente do arquivo .env
 load_dotenv()
@@ -23,18 +24,30 @@ auth_str = f"{username}:{api_token}"
 auth_bytes = auth_str.encode("utf-8")
 auth_base64 = base64.b64encode(auth_bytes).decode("utf-8")
 
+cookie1 = os.getenv("COOKIE1")
+cookie2 = os.getenv("COOKIE2")
+cookie3 = os.getenv("COOKIE3")
+
 headers = {
     "Accept": "application/json",
-    "Authorization": f"Basic {auth_base64}",
-    'Cookie': os.getenv("COOKIE")
+    "cookie": f"JSESSIONID={cookie1}; atlassian.xsrf.token={cookie2}; seraph.rememberme.cookie={cookie3}",
 }
 
 # Configurações do Banco de Dados MySQL
-DB_HOST = os.getenv("DB_HOST")
-DB_USER = os.getenv("DB_USER")
-DB_PASSWORD = os.getenv("DB_PASSWORD")
-DB_NAME = os.getenv("DB_NAME")
-DB_PORT = int(os.getenv("DB_PORT"))
+use_client = True
+
+if use_client:
+    DB_HOST = os.getenv("11DB_HOST")
+    DB_USER = os.getenv("11DB_USER")
+    DB_PASSWORD = os.getenv("11DB_PASSWORD")
+    DB_NAME = os.getenv("11DB_NAME")
+    DB_PORT = int(os.getenv("11DB_PORT"))
+else:
+    DB_HOST = os.getenv("DB_HOST")
+    DB_USER = os.getenv("DB_USER")
+    DB_PASSWORD = os.getenv("DB_PASSWORD")
+    DB_NAME = os.getenv("DB_NAME")
+    DB_PORT = int(os.getenv("DB_PORT"))
 
 ano_atual = datetime.now().year
 mes_atual = datetime.now().month
@@ -50,9 +63,12 @@ sql_client = pymysql.connect(
 print('connected to database')
 
 update_time = datetime.now().strftime("%Y-%m-%d")
+update_time_disciplinas = datetime.now().strftime("%Y-%m-%d")
 last_updated = open("last_updated.txt", "r").read().strip()
+last_updated_disciplinas = open("last_updated_disciplinas.txt", "r").read().strip()
+
 print(last_updated)
-if last_updated == update_time:
+if last_updated == update_time and last_updated_disciplinas == update_time_disciplinas:
     print("Já foi atualizado hoje.")
     exit()
 
@@ -66,8 +82,9 @@ def obter_primeiro_coordenador(coordenador):
     # Remove espaços invisíveis como CHAR(160) (U+00A0)
     coordenador = coordenador.replace("\u00A0", "")
 
-    # Substitui variações de separadores "/ " e " /" por "/"
+    # Substitui variações de separadores "/ ", " /" e " / " por "/"
     coordenador = re.sub(r"\s*/\s*", "/", coordenador)
+    coordenador = coordenador.replace(" / ", "/")
 
     # Converte apóstrofos curvos para apóstrofos normais
     coordenador = coordenador.replace("’", "'")
@@ -159,6 +176,67 @@ def salvar_dados_mysql(dados):
     finally:
         cursor.close()
 
+def salvar_disciplinas_mysql(dados):
+    cursor = sql_client.cursor()
+    
+    try:
+        # Inserir dados principais
+        start_commit_time = time.time()
+        print("***-*-*-*-*-*-*-*-*-******-*-*-*-*-*-*-*-*-***")
+
+        progress_bar = tqdm(total=len(dados), desc="Salvando chamados", unit="chamado")
+        
+        for issue in dados:
+            # Inserir na tabela principal
+            cursor.execute(
+                """
+                INSERT INTO db_dpc_jira_disciplinas (
+                    chave, link_jira, rotulos, data_para_ficar_pronto, data_criacao, data_atualizacao, 
+                    data_de_resolucao, disciplina, coordenador, coordenador_master, entidade_curso, entidade,
+                    migracao, curso, situacao, descricao
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                    rotulos = VALUES(rotulos),
+                    link_jira = VALUES(link_jira),
+                    data_para_ficar_pronto = VALUES(data_para_ficar_pronto),
+                    data_criacao = VALUES(data_criacao),
+                    data_atualizacao = VALUES(data_atualizacao),
+                    data_de_resolucao = VALUES(data_de_resolucao),
+                    disciplina = VALUES(disciplina),
+                    coordenador = VALUES(coordenador),
+                    coordenador_master = VALUES(coordenador_master),
+                    entidade_curso = VALUES(entidade_curso),
+                    entidade = VALUES(entidade),
+                    migracao = VALUES(migracao),
+                    curso = VALUES(curso),
+                    situacao = VALUES(situacao),
+                    descricao = VALUES(descricao)
+                """,
+                (
+                    issue['chave'], issue['link_jira'], issue['rotulos'], 
+                    issue['data_para_ficar_pronto'], issue['data_criacao'], issue['data_atualizacao'], 
+                    issue['data_de_resolucao'], issue['disciplina'], 
+                    issue['coordenador'], issue['coordenador_master'], 
+                    issue['entidade_curso'], issue['entidade'],
+                    issue['migracao'], issue['curso'], 
+                    issue['situacao'], issue['descricao']
+                )
+            )
+            progress_bar.update(1)
+        
+        sql_client.commit()
+        progress_bar.close()
+        end_commit_time = time.time()
+        print("***-*-*-*-*-*-*-*-*-******-*-*-*-*-*-*-*-*-***\n")
+        print(f"Chamados salvos com sucesso!\nTempo gasto para salvar os chamados: {end_commit_time - start_commit_time:.2f} segundos\n***-*-*-*-*-*-*-*-*-******-*-*-*-*-*-*-*-*-***")
+        
+    except Exception as e:
+        sql_client.rollback()
+        print(f"Erro ao salvar dados: {str(e)}")
+        raise e
+    finally:
+        cursor.close()
+
 # Função para realizar uma requisição com retentativas
 def realizar_requisicao(url, headers, params, max_retentativas=3):
     for tentativa in range(max_retentativas):
@@ -167,7 +245,7 @@ def realizar_requisicao(url, headers, params, max_retentativas=3):
             return response
         print(f"Tentativa {tentativa + 1} falhou. Retentando em 2 segundos...")
         time.sleep(2)
-    raise Exception(f"Falha ao conectar à API após {max_retentativas} tentativas.")
+    raise Exception(f"Falha ao conectar à API após {max_retentativas} tentativas. \n response: {response.text}")
 
 # Função para pegar os status das subtasks (Video e Conteúdo)
 def processar_status_subtarefas(tipo_de_item, subtasks):
@@ -190,7 +268,7 @@ def processar_status_subtarefas(tipo_de_item, subtasks):
         status = fields['status']['name']
         
         # Verifica se há menção a vídeo nas subtarefas
-        if "VIDEO" in summary or "VÍDEO" in summary:
+        if "VÍDEO - GRAVAR" in summary:
             tem_video = True
 
         if tipo_de_item == "SR-Reuso":
@@ -251,7 +329,11 @@ def extrair_entidade(entidade_curso):
         
     # Divide a string no primeiro ' - ' se existir
     partes = entidade_curso.split(' - ', 1)
-    primeira_parte = partes[0]
+    primeira_parte = partes[0].strip() 
+
+    if "CETEC" in primeira_parte:
+        print(partes)
+        print(primeira_parte)
     
     # Extrai a parte após qualquer "Fac. Unyleya | "
     if "Fac. Unyleya | " in primeira_parte:
@@ -272,6 +354,7 @@ def extrair_entidade(entidade_curso):
 def obter_dados_jira():
     # Lista de prefixos válidos para Entidade e Curso
     entidades_validas = [
+        "Fac. Unyleya | CETEC",
         "Fac. Unyleya | CETEC",
         "Fac. Unyleya | CEAB",
         "Fac. Unyleya | CECA",
@@ -300,32 +383,33 @@ def obter_dados_jira():
 
     jql_query = (
         'project = PROCONTEUD AND "Entidade e Curso" != "Fac. Unyleya | Graduação"'
-        ' AND issuetype in (SR-Completa, SR-Reuso)'
+        ' AND issuetype in (SR-Completa, SR-Reuso, SR-Modificada)'
         ' AND status in (Reopen, Closed, Done, "In Progress", "To Do", Pending)'
         f' AND updated >= {last_updated} ORDER BY duedate DESC'
     )
 
     jql_encoded = quote(jql_query, safe=":=,()")
     base_url = f"https://jira.unyleya.com.br/rest/api/2/search?jql={jql_encoded}"
-
+    print(base_url)
     params = {
         "fields": ",".join([
-            "total",
-            "customfield_10808",
-            "labels",
-            "description",
-            "customfield_10803",
-            "customfield_10804",
-            "created",
-            "updated",
-            "fixVersions",
-            "duedate",
-            "summary",
-            "issuetype",
-            "status",
-            "customfield_11303",
-            "customfield_10802",
-            "subtasks",
+            "total", # Total de tarefas
+            "customfield_10808", # Entidade e Curso
+            "labels", # Rótulos
+            "description", # Descrição da disciplina
+            "customfield_10803", # Coordenador
+            "customfield_10804", # Coordenador Master
+            "created", # Data de criação do chamado
+            "updated", # Data de atualização no chamado
+            "fixVersions", # Versões corrigidas
+            "components", # Componentes (Vídeo ou Conteúdo)            
+            "duedate", # Data de ficar pronto
+            "summary", # Título do chamado
+            "issuetype", # Tipo de chamado
+            "status", # Situação do chamado
+            "customfield_11303", # CPF do conteudista
+            "customfield_10802", # Conteudista
+            "subtasks" # Subtarefas
         ]),
         "startAt": start_at,
         "maxResults": max_results
@@ -350,8 +434,8 @@ def obter_dados_jira():
             # Campo Entidade e Curso
             entidade_curso_data = fields.get("customfield_10808")
             if entidade_curso_data:
-                main_value = entidade_curso_data.get("value", "")
-                child_value = entidade_curso_data.get("child", {}).get("value", "")
+                main_value = entidade_curso_data.get("value", "").strip()
+                child_value = entidade_curso_data.get("child", {}).get("value", "").strip()
                 entidade_curso = f"{main_value} - {child_value}" if child_value else main_value
                 entidade = extrair_entidade(entidade_curso)
             else:   
@@ -466,6 +550,164 @@ def obter_dados_jira():
 
     return all_issues
 
+def obter_disciplinas_jira():
+    # Lista de prefixos válidos para Entidade e Curso
+    entidades_validas = [
+        "Fac. Unyleya | CETEC",
+        "Fac. Unyleya | CETEC",
+        "Fac. Unyleya | CEAB",
+        "Fac. Unyleya | CECA",
+        "Fac. Unyleya | CECaV",
+        "Fac. Unyleya | CECOMEX",
+        "Fac. Unyleya | CECONF",
+        "Fac. Unyleya | CEDAC",
+        "Fac. Unyleya | CEDUC",
+        "Fac. Unyleya | CEENG",
+        "Fac. Unyleya | CEGEP",
+        "Fac. Unyleya | CEJUR",
+        "Fac. Unyleya | CEPÓS",
+        "Fac. Unyleya | CES",
+        "Fac. Unyleya | NEPIC",
+        "Fac. Unyleya | Pós | 3R Capacita",
+        "Fac. Unyleya | Pós | Bioforense",
+        "Fac. Unyleya | Pós-Graduação",
+        "Fac. Unyleya | YMED",
+        "Fac. Unyleya | YODONTO",
+        "Fac. Unyleya | YVET"
+    ]
+    
+    start_at = 0
+    max_results = 1000
+    all_issues = []
+
+    jql_query = (
+        'project = PROCONTEUD AND "Entidade e Curso" != "Fac. Unyleya | Graduação"'
+        ' AND issuetype = Sub-task AND component in ("CONTEÚDO - ENTREGAR", "VÍDEO - GRAVAR")'
+        f' AND updated >= {last_updated_disciplinas} ORDER BY duedate DESC'
+    )
+
+    jql_encoded = quote(jql_query, safe=":=,()")
+    base_url = f"https://jira.unyleya.com.br/rest/api/2/search?jql={jql_encoded}"
+    print(base_url)
+    params = {
+        "fields": ",".join([
+            "total", # Total de tarefas
+            "customfield_10808", # Entidade e Curso
+            "labels", # Rótulos
+            "description", # Descrição da subtarefa
+            "customfield_10803", # Coordenador
+            "customfield_10804", # Coordenador Master
+            "created", # Data de criação do chamado
+            "updated", # Data de atualização no chamado
+            "resolutiondate", # Data que foi "Resolvido"
+            "components", # Componentes (Vídeo ou Conteúdo)
+            "duedate", # Data de ficar pronto
+            "summary", # Título do chamado
+            "issuetype", # Tipo de chamado
+            "status", # Situação do chamado
+            "customfield_11303", # CPF do conteudista
+            "customfield_10802" # Conteudista
+        ]),
+        "startAt": start_at,
+        "maxResults": max_results
+    }
+    response = realizar_requisicao(base_url, headers, params)
+
+    data = response.json()
+    total_issues = data["total"]  # Total issues from Jira API
+    progress_bar = tqdm(total=total_issues, desc="Processando tarefas", unit="tarefa")
+
+    while True:
+        params["startAt"] = start_at
+        response = realizar_requisicao(base_url, headers, params)
+        data = response.json()
+        issues = data.get("issues", [])
+        if not issues:
+            break
+
+        for issue in issues:
+            fields = issue["fields"]
+
+            # Campo Entidade e Curso
+            entidade_curso_data = fields.get("customfield_10808")
+            if entidade_curso_data:
+                main_value = entidade_curso_data.get("value", "").strip()
+                child_value = entidade_curso_data.get("child", {}).get("value", "").strip()
+                entidade_curso = f"{main_value} - {child_value}" if child_value else main_value
+                entidade = extrair_entidade(entidade_curso)
+            else:   
+                entidade_curso = None
+                entidade = None
+            
+            # Verifica se a entidade_curso começa com algum dos prefixos válidos
+            if not entidade_curso or not any(entidade_curso.startswith(prefix) for prefix in entidades_validas):
+                continue
+            
+            if "Fac. Unyleya | Graduação" in main_value:
+                continue
+
+            disciplina = fields.get("summary")
+
+            componentes = fields.get("components")
+
+            if componentes:
+                nome_componente = componentes[0]["name"]
+                if "VÍDEO" in nome_componente.upper():
+                    tem_video = True
+                else:
+                    tem_video = False
+            
+            chave = issue["key"]
+            rotulos = fields.get("labels", [])
+            descricao = fields.get("description")
+            coordenador = fields.get("customfield_10803")
+            coordenador_master = fields.get("customfield_10804")
+            
+            link_jira = f"https://jira.unyleya.com.br/browse/{chave}"
+
+            if child_value:
+                curso = child_value
+
+            # Datas
+            data_de_resolucao = fields.get("resolutiondate")
+            data_de_resolucao = time.strptime(data_de_resolucao.split("T")[0], "%Y-%m-%d") if data_de_resolucao else None
+            created_datetime = fields.get("created", "")
+            created_date = created_datetime.split("T")[0] if created_datetime else None
+            updated_datetime = fields.get("updated", "")
+            updated_date = updated_datetime.split("T")[0] if updated_datetime else None
+            migracao = "SV>CV" if any("SV>CV" in label for label in rotulos) else "CV" if tem_video else "SV"
+
+            situacao = fields.get("status", {}).get("name")
+
+            # Adicionando os dados processados
+            all_issues.append({
+                "chave": chave,
+                "link_jira": link_jira,
+                "rotulos": ", ".join(rotulos) or None,
+                "data_para_ficar_pronto": fields.get("duedate") or None,
+                "data_criacao": created_date,
+                "data_atualizacao": updated_date,
+                "data_de_resolucao": data_de_resolucao,
+                "disciplina": disciplina,
+                "coordenador": coordenador,
+                "coordenador_master": coordenador_master,
+                "entidade_curso": entidade_curso,
+                "entidade": entidade,
+                "migracao": migracao,
+                "curso": curso,
+                "situacao": situacao,
+                "descricao": descricao,
+            })
+
+        progress_bar.update(len(issues))
+
+        if start_at >= total_issues:
+            break
+
+        start_at += max_results
+
+    return all_issues
+
 def popular_atualizar_cursos_coordenadores():
     """
     Atualiza a estrutura da tabela existente e popula as tabelas de cursos e coordenadores
@@ -495,6 +737,13 @@ def popular_atualizar_cursos_coordenadores():
             WHERE d.chave IS NOT NULL AND d.data_atualizacao >= '{last_updated}'
         """)
 
+        cursor.execute(f"""
+            UPDATE db_dpc_jira_disciplinas d
+            JOIN cursos c ON d.curso = c.nome_curso AND d.entidade = c.entidade
+            SET d.curso_id = c.id
+            WHERE d.chave IS NOT NULL AND d.data_atualizacao >= '{last_updated_disciplinas}'
+        """)
+
         # Popula a tabela de coordenadores com os dados existentes, utilizando primeiro_coordenador
         cursor.execute(f"""
             INSERT INTO coordenadores (coordenador, coordenador_master)
@@ -520,6 +769,7 @@ def popular_atualizar_cursos_coordenadores():
             FROM (
                 SELECT DISTINCT 
                     CASE 
+                        WHEN coordenador LIKE 'Coord. Geral dos Cursos em Direito / Vitor Fernandes Gonçalves / Simone Cuber Araujo Pinto' THEN 'Coordenação Geral dos Cursos de Direito'
                         WHEN coordenador LIKE 'Coord. Geral dos Cursos em Direito%' THEN 'Coordenação Geral dos Cursos de Direito'
                         WHEN coordenador LIKE 'Renata Alcione de Faria Rodrigues%' THEN 'Renata Alcione de Faria Villela de Araújo'
                         ELSE TRIM(REPLACE(CONVERT(coordenador USING utf8mb4), UNHEX('C2A0'), ''))
@@ -549,6 +799,24 @@ def popular_atualizar_cursos_coordenadores():
             SET d.coordenador_id = c.id
             WHERE d.chave IS NOT NULL AND d.data_atualizacao >= '{last_updated}'
         """)
+
+        # Atualiza os IDs dos coordenadores na tabela db_dpc_jira_disciplinas utilizando "primeiro_coordenador"
+        cursor.execute(f"""
+            UPDATE db_dpc_jira_disciplinas d
+            JOIN (
+                SELECT id, coordenador 
+                FROM coordenadores
+            ) c ON TRIM(SUBSTRING_INDEX(
+                REPLACE(
+                    REPLACE(
+                        REPLACE(REPLACE(CONVERT(d.coordenador USING utf8mb4), ' / ', '/'), 
+                    ' /', '/'),
+                '/ ', '/'), 
+            '’', ''''), 
+            '/', 1)) = c.coordenador
+            SET d.coordenador_id = c.id
+            WHERE d.chave IS NOT NULL AND d.data_atualizacao >= '{last_updated_disciplinas}'
+        """)
         
         # Atualiza os IDs de coordenadores na tabela cursos
         cursor.execute("SET SQL_SAFE_UPDATES = 0")  
@@ -576,16 +844,24 @@ def popular_atualizar_cursos_coordenadores():
 # Modificar a função main para incluir a atualização da estrutura
 def main():    
     dados_jira = obter_dados_jira()
+    dados_disciplinas = obter_disciplinas_jira()
 
     if dados_jira:
         salvar_dados_mysql(dados_jira)
+        with open("last_updated.txt", "w") as f:
+            f.write(update_time)
     else:
         print("Nenhum dado a ser salvo.")
+
+    if dados_disciplinas:
+        salvar_disciplinas_mysql(dados_disciplinas)
+        with open("last_updated_disciplinas.txt", "w") as f:
+            f.write(update_time_disciplinas)
+    else:
+        print("Nenhum dado de disciplina a ser salvo.")
     
     popular_atualizar_cursos_coordenadores()
 
 if __name__ == "__main__":
     main()
     sql_client.close()
-    with open("last_updated.txt", "w") as f:
-        f.write(update_time)
