@@ -114,3 +114,7 @@ dmypy.json
 
 # dotenv
 .env
+
+# Excel
+*.xls
+*.xlsx

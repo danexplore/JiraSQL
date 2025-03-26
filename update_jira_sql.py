@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 from tqdm import tqdm
 from datetime import datetime
 from urllib.parse import quote
+import pandas as pd
 import unicodedata
 import re
 import json
@@ -193,7 +194,7 @@ def salvar_disciplinas_mysql(dados):
                 INSERT INTO db_dpc_jira_disciplinas (
                     chave, link_jira, rotulos, data_para_ficar_pronto, data_criacao, data_atualizacao, 
                     data_de_resolucao, disciplina, coordenador, coordenador_master, entidade_curso, entidade,
-                    migracao, curso, situacao, descricao
+                    migracao, curso, situacao, tipo
                 ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON DUPLICATE KEY UPDATE
                     rotulos = VALUES(rotulos),
@@ -210,7 +211,7 @@ def salvar_disciplinas_mysql(dados):
                     migracao = VALUES(migracao),
                     curso = VALUES(curso),
                     situacao = VALUES(situacao),
-                    descricao = VALUES(descricao)
+                    tipo = VALUES(tipo)
                 """,
                 (
                     issue['chave'], issue['link_jira'], issue['rotulos'], 
@@ -219,7 +220,7 @@ def salvar_disciplinas_mysql(dados):
                     issue['coordenador'], issue['coordenador_master'], 
                     issue['entidade_curso'], issue['entidade'],
                     issue['migracao'], issue['curso'], 
-                    issue['situacao'], issue['descricao']
+                    issue['situacao'], issue['tipo']
                 )
             )
             progress_bar.update(1)
@@ -236,6 +237,11 @@ def salvar_disciplinas_mysql(dados):
         raise e
     finally:
         cursor.close()
+
+def salvar_escola_tecnica(dados):
+    # usar pandas para criar um dataframe dos dados e salvar em excel
+    df = pd.DataFrame(dados)
+    df.to_excel("escola_tecnica.xlsx", index=False)
 
 # Função para realizar uma requisição com retentativas
 def realizar_requisicao(url, headers, params, max_retentativas=3):
@@ -330,10 +336,6 @@ def extrair_entidade(entidade_curso):
     # Divide a string no primeiro ' - ' se existir
     partes = entidade_curso.split(' - ', 1)
     primeira_parte = partes[0].strip() 
-
-    if "CETEC" in primeira_parte:
-        print(partes)
-        print(primeira_parte)
     
     # Extrai a parte após qualquer "Fac. Unyleya | "
     if "Fac. Unyleya | " in primeira_parte:
@@ -591,10 +593,10 @@ def obter_disciplinas_jira():
     print(base_url)
     params = {
         "fields": ",".join([
+            "parent", # Tarefa pai
             "total", # Total de tarefas
             "customfield_10808", # Entidade e Curso
             "labels", # Rótulos
-            "description", # Descrição da subtarefa
             "customfield_10803", # Coordenador
             "customfield_10804", # Coordenador Master
             "created", # Data de criação do chamado
@@ -628,6 +630,14 @@ def obter_disciplinas_jira():
         for issue in issues:
             fields = issue["fields"]
 
+            parent_key = fields.get("parent", {}).get("key")
+
+            # get "tipo_de_item" from parent issue using db_dpc_jira
+            cursor = sql_client.cursor()
+            cursor.execute(f"SELECT curso FROM db_dpc_jira WHERE chave = '{parent_key}'")
+            curso = cursor.fetchone()[0] if cursor.rowcount > 0 else None
+            cursor.close()
+            
             # Campo Entidade e Curso
             entidade_curso_data = fields.get("customfield_10808")
             if entidade_curso_data:
@@ -646,7 +656,7 @@ def obter_disciplinas_jira():
             if "Fac. Unyleya | Graduação" in main_value:
                 continue
 
-            disciplina = fields.get("summary")
+            disciplina = fields.get("summary").split(": ")[0]
 
             componentes = fields.get("components")
 
@@ -656,10 +666,10 @@ def obter_disciplinas_jira():
                     tem_video = True
                 else:
                     tem_video = False
-            
+            tipo = nome_componente.split(" - ")[0]
+
             chave = issue["key"]
             rotulos = fields.get("labels", [])
-            descricao = fields.get("description")
             coordenador = fields.get("customfield_10803")
             coordenador_master = fields.get("customfield_10804")
             
@@ -667,6 +677,8 @@ def obter_disciplinas_jira():
 
             if child_value:
                 curso = child_value
+            else:
+                curso = curso
 
             # Datas
             data_de_resolucao = fields.get("resolutiondate")
@@ -675,7 +687,7 @@ def obter_disciplinas_jira():
             created_date = created_datetime.split("T")[0] if created_datetime else None
             updated_datetime = fields.get("updated", "")
             updated_date = updated_datetime.split("T")[0] if updated_datetime else None
-            migracao = "SV>CV" if any("SV>CV" in label for label in rotulos) else "CV" if tem_video else "SV"
+            migracao = "CV" if entidade != "Pós-Graduação" else "SV"
 
             situacao = fields.get("status", {}).get("name")
 
@@ -696,7 +708,130 @@ def obter_disciplinas_jira():
                 "migracao": migracao,
                 "curso": curso,
                 "situacao": situacao,
-                "descricao": descricao,
+                "tipo": tipo
+            })
+
+        progress_bar.update(len(issues))
+
+        if start_at >= total_issues:
+            break
+
+        start_at += max_results
+
+    return all_issues
+
+def obter_escola_tecnica_jira():
+    
+    start_at = 0
+    max_results = 1000
+    all_issues = []
+
+    jql_query = (
+        'project = PROCONTEUD AND issuetype in (Sub-task)'
+        ' AND status in (Reopen, Closed, Done, "In Progress", "To Do", Pending)'
+        ' AND "Entidade e Curso" in ("Escola Técnica | Cursos Técnicos | Presencial", "Escola Técnica | Cursos Técnicos | Semipresencial")'
+        ' AND text ~ "VÍDEO - GRAVAR"'
+        ' ORDER BY updated'
+    )
+
+    # Explicar a necessidade de ter uma maquina melhor
+    # Maquina I3 ficará como um backup
+
+    jql_encoded = quote(jql_query, safe=":=,()")
+    base_url = f"https://jira.unyleya.com.br/rest/api/2/search?jql={jql_encoded}"
+    print(base_url)
+    params = {
+        "fields": ",".join([
+            "parent", # Tarefa pai
+            "total", # Total de tarefas
+            "customfield_10808", # Entidade e Curso
+            "labels", # Rótulos
+            "customfield_10802", # Conteudista
+            "created", # Data de criação do chamado
+            "updated", # Data de atualização no chamado
+            "summary", # Título do chamado
+            "issuetype", # Tipo de chamado
+            "customfield_12900", # Qtd de Horas Gravadas
+            "customfield_10900", # Carga Horária
+            "status" # Situação do chamado
+        ]),
+        "startAt": start_at,
+        "maxResults": max_results
+    }
+    response = realizar_requisicao(base_url, headers, params)
+
+    data = response.json()
+    total_issues = data["total"]  # Total issues from Jira API
+    progress_bar = tqdm(total=total_issues, desc="Processando tarefas", unit="tarefa")
+
+    while True:
+        params["startAt"] = start_at
+        response = realizar_requisicao(base_url, headers, params)
+        data = response.json()
+        issues = data.get("issues", [])
+        if not issues:
+            break
+
+        for issue in issues:
+            fields = issue["fields"]
+
+            parent_key = fields.get("parent", {}).get("key")
+            
+            # crie uma condicional para verificar se o campo 12900 é nulo, se for então tpo = carga horária, senão então tipo = qtd de horas
+            if fields.get("customfield_12900") == None:
+                qtd_de_horas = fields.get("customfield_10900")
+                tipo = "Carga Horária"
+            else:
+                qtd_de_horas = fields.get("customfield_12900")
+                tipo = "Qtd de Horas Gravadas"
+            
+            # Campo Entidade e Curso
+            entidade_curso_data = fields.get("customfield_10808")
+            if entidade_curso_data:
+                main_value = entidade_curso_data.get("value", "").strip()
+                child_value = entidade_curso_data.get("child", {}).get("value", "").strip()
+                entidade_curso = f"{main_value} - {child_value}" if child_value else main_value
+                entidade = extrair_entidade(entidade_curso)
+                print(entidade)
+                print(entidade_curso)
+            else:   
+                entidade_curso = None
+                entidade = None
+
+            disciplina = fields.get("summary").split(": ")[0]
+
+            chave = issue["key"]
+            rotulos = fields.get("labels", [])
+            
+            link_jira = f"https://jira.unyleya.com.br/browse/{chave}"
+
+            if child_value:
+                curso = child_value
+            else:
+                curso = curso
+
+            created_datetime = fields.get("created", "")
+            created_date = created_datetime.split("T")[0] if created_datetime else None
+            updated_datetime = fields.get("updated", "")
+            updated_date = updated_datetime.split("T")[0] if updated_datetime else None
+
+            situacao = fields.get("status", {}).get("name")
+
+            # Adicionando os dados processados
+            all_issues.append({
+                "chave": chave,
+                "link_jira": link_jira,
+                "rotulos": ", ".join(rotulos) or None,
+                "data_criacao": created_date,
+                "data_atualizacao": updated_date,
+                "disciplina": disciplina,
+                "conteudista": fields.get("customfield_10802") or None,
+                "entidade_curso": entidade_curso,
+                "entidade": entidade,
+                "curso": curso,
+                "situacao": situacao,
+                "qtd_de_horas": qtd_de_horas,
+                "tipo": tipo
             })
 
         progress_bar.update(len(issues))
@@ -720,13 +855,46 @@ def popular_atualizar_cursos_coordenadores():
     try:        
         # Popula a tabela de cursos
         cursor.execute(f"""
-            INSERT IGNORE INTO cursos (nome_curso, entidade)
-            SELECT DISTINCT
-                curso,
-                entidade
-            FROM db_dpc_jira 
-            WHERE curso IS NOT NULL AND entidade IS NOT NULL AND data_atualizacao >= '{last_updated}'
+            SELECT DISTINCT nome_curso, entidade, versao
+            FROM (
+                SELECT 
+                    curso AS nome_curso,
+                    entidade,
+                CASE
+                    WHEN entidade != 'Pós-Graduação' THEN "CV"
+                    ELSE "SV"
+                    END as versao
+                FROM db_dpc_jira
+                WHERE curso IS NOT NULL AND entidade IS NOT NULL
+            ) AS cursos
         """)
+        cursos = cursor.fetchall()
+        #transform cursos in dataframe:
+        def salvar_cursos_mysql(result):
+            cursor = sql_client.cursor()
+            try:
+                progress_bar = tqdm(total=len(result), desc="Salvando cursos", unit="curso")
+                for curso in result:
+                    cursor.execute(
+                        """
+                        INSERT INTO cursos (nome_curso, entidade, versao)
+                        VALUES (%s, %s, %s)
+                        ON DUPLICATE KEY UPDATE
+                            versao = VALUES(versao)
+                        """,
+                        (curso[0], curso[1], curso[2])
+                    )
+                    progress_bar.update(1)
+                sql_client.commit()
+                progress_bar.close()
+            except Exception as e:
+                sql_client.rollback()
+                print(f"Erro ao salvar dados: {str(e)}")
+                raise e
+            finally:
+                cursor.close()
+        salvar_cursos_mysql(cursos)
+        # AND data_atualizacao >= '{last_updated})
         
         # Atualiza os IDs dos cursos na tabela principal
         cursor.execute("SET SQL_SAFE_UPDATES = 0")  
@@ -844,23 +1012,31 @@ def popular_atualizar_cursos_coordenadores():
 # Modificar a função main para incluir a atualização da estrutura
 def main():    
     dados_jira = obter_dados_jira()
-    dados_disciplinas = obter_disciplinas_jira()
 
     if dados_jira:
         salvar_dados_mysql(dados_jira)
-        with open("last_updated.txt", "w") as f:
-            f.write(update_time)
     else:
         print("Nenhum dado a ser salvo.")
 
+    with open("last_updated.txt", "w") as f:
+            f.write(update_time)
+
+    dados_disciplinas = obter_disciplinas_jira()
     if dados_disciplinas:
         salvar_disciplinas_mysql(dados_disciplinas)
-        with open("last_updated_disciplinas.txt", "w") as f:
-            f.write(update_time_disciplinas)
     else:
         print("Nenhum dado de disciplina a ser salvo.")
+
+    popular_atualizar_cursos_coordenadores()        
+    with open("last_updated_disciplinas.txt", "w") as f:
+        f.write(update_time_disciplinas)
+
+    #dados_escola_tecnica = obter_escola_tecnica_jira()
+    #if dados_escola_tecnica:
+    #    salvar_escola_tecnica(dados_escola_tecnica)
+    #else:
+    #    print("Nenhum dado de escola técnica a ser salvo.")
     
-    popular_atualizar_cursos_coordenadores()
 
 if __name__ == "__main__":
     main()

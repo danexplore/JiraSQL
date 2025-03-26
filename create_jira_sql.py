@@ -66,7 +66,7 @@ CREATE TABLE IF NOT EXISTS db_dpc_jira_disciplinas (
     curso TEXT,
     curso_id INT,
     situacao VARCHAR(50),
-    descricao TEXT,
+    tipo VARCHAR(25),
     FOREIGN KEY (curso_id) REFERENCES cursos(id),
     FOREIGN KEY (coordenador_id) REFERENCES coordenadores(id)
 );
