@@ -865,7 +865,7 @@ def popular_atualizar_cursos_coordenadores():
                     ELSE "SV"
                     END as versao
                 FROM db_dpc_jira
-                WHERE curso IS NOT NULL AND entidade IS NOT NULL
+                WHERE curso IS NOT NULL AND entidade IS NOT NULL AND data_atualizacao >= '{last_updated}
             ) AS cursos
         """)
         cursos = cursor.fetchall()
