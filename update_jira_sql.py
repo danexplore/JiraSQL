@@ -35,7 +35,7 @@ headers = {
 }
 
 # Configurações do Banco de Dados MySQL
-use_client = True
+use_client = False
 
 if use_client:
     DB_HOST = os.getenv("11DB_HOST")
